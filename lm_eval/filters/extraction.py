@@ -49,7 +49,6 @@ class RegexFilter(Filter):
             return filtered
 
         filtered_resps = list(map(lambda x: filter_set(x), resps))
-
         return filtered_resps
 
 
@@ -184,3 +183,4 @@ class MultiChoiceRegexFilter(RegexFilter):
             filtered_resps.append(filtered)
 
         return filtered_resps
+

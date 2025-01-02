@@ -15,6 +15,8 @@ from . import (
     textsynth,
     vllm_causallms,
     vllm_vlms,
+    bedrock,
+    claude_llm,
 )
 
 
