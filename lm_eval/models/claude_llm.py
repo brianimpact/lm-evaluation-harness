@@ -1,121 +1,100 @@
-import json
-import os
-from importlib.util import find_spec
 from typing import Any, List, Tuple
-
-from tqdm import tqdm
 
 from lm_eval import utils
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
+from tqdm import tqdm
 
 eval_logger = utils.eval_logger
 
 
-def bedrock_chat(
-    client,  # boto3.client("bedrock-runtime")
-    model: str,
-    prompt: str,
-    max_tokens: int,
-    temperature: float,
-    stop: List[str],
-    **kwargs: Any,
+def claude_chat(
+        client,
+        model: str,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+        stop: List[str],
+        **kwargs: Any,
 ) -> str:
     """Wrapper function around the Bedrock chat completion API client with exponential back-off
     in case of RateLimitError.
     params:
-        client: boto3.Client
-            Bedrock runtime client
+        client: anthropic.Anthropic client
         model: str
-            Bedrock model e.g. 'anthropic.claude-3-haiku-20240307-v1:0'
+            anthropic model e.g. 'claude-3-5-sonnet-20241022'
         prompt: str
             Prompt to feed to the model
         max_tokens: int
             Maximum number of tokens to sample from the model
-        temperature: float
-            Sampling temperature
         stop: List[str]
             List of stop sequences
         kwargs: Any
             Additional model_args to pass to the API client
     """
 
-    if not find_spec("boto3"):
-        raise Exception(
-            "attempted to use 'bedrock' LM type, but package `boto3` is not installed. \
-please install boto3 via `pip install 'lm-eval[bedrock]'` or `pip install -e '.[bedrock]'`",
-        )
-
-    def _exception_callback(e: Exception, sleep_time: float) -> None:
-        eval_logger.warning(
-            f"RateLimitError occurred: {e.__cause__}\n Retrying in {sleep_time} seconds"
-        )
-
     def messages():
-        # structured payload for request
-
-        formatted_messages = [
-            {"role": "user", "content": [{"type": "text", "text": prompt}]}
-        ]
-        body = {
+        #    # Set up the base message parameters
+        message_params = {
+            "model": model,
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "messages": formatted_messages,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                }
+            ]
         }
 
-        # update body with params then encode
-        body.update(kwargs)
-        if "max_gen_toks" in body:
-            body.pop("max_gen_toks")
-        body_bytes = json.dumps(body).encode("utf-8")
+        # Add system message if provided in kwargs
+        if "system" in kwargs:
+            message_params["system"] = kwargs.pop("system")
+        # Make the API call
+        response = client.messages.create(**message_params)
 
-        response = client.invoke_model(
-            body=body_bytes,
-            contentType="application/json",
-            accept="application/json",
-            modelId=model,
-        )
-        response_body = json.loads(response.get("body").read())
-
-        return response_body["content"][0]["text"]
+        # Return the text content from the response
+        return response.content[0].text
 
     return messages()
 
 
-@register_model("bedrock")
-class BedrockChatLM(LM):
+@register_model("claude_chat")
+class ClaudeChatLM(LM):
     def __init__(
-        self,
-        model: str,
-        batch_size: int = 1,
-        max_tokens: int = 256,
-        temperature: float = 0,  # defaults to 1
-        **kwargs,  # top_p, top_k, etc.
+            self,
+            model: str,
+            temperature: float = 0,
+            max_tokens: int = 2048,
+            **kwargs,  # top_p, top_k, system etc.
     ) -> None:
-        """Bedrock API wrapper.
+        """Anthropic API wrapper.
         :param model: str
-            Bedrock model e.g. 'anthropic.claude-3-haiku-20240307-v1:0'
+            Bedrock model e.g. 'claude-3-5-sonnet-20241022'
         :param max_tokens: int
             Maximum number of tokens to sample from the model
-        :param temperature: float
-            Sampling temperature
         :param kwargs: Any
             Additional model_args to pass to the API client
         """
         super().__init__()
 
         try:
-            import boto3
+            import anthropic
         except ModuleNotFoundError:
             raise Exception(
-                "attempted to use 'bedrock' LM type, but package `boto3` is not installed. \
-please install boto3 via `pip install 'lm-eval[bedrock]'` or `pip install -e '.[boto3]'`",
+                "attempted to use 'anthropic' LM type, but package `anthropic` is not installed. \
+please install anthropic via `pip install anthropic`",
             )
 
         self.model = model
-        self.client = boto3.client("bedrock-runtime")
-        self.temperature = temperature
+        self.client = anthropic.Anthropic()
         self.max_tokens = max_tokens
+        self.temperature = temperature
         self.tokenizer = None
         self.kwargs = kwargs
 
@@ -152,12 +131,6 @@ please install boto3 via `pip install 'lm-eval[bedrock]'` or `pip install -e '.[
         raise NotImplementedError("No support for logits.")
 
     def generate_until(self, requests, disable_tqdm: bool = False) -> List[str]:
-        if not find_spec("boto3"):
-            raise Exception(
-                "attempted to use 'bedrock' LM type, but package `boto3` is not installed. \
-please install boto3 via `pip install 'lm-eval[bedrock]'` or `pip install -e '.[bedrock]'`",
-            )
-        import botocore
 
         if not requests:
             return []
@@ -172,13 +145,13 @@ please install boto3 via `pip install 'lm-eval[bedrock]'` or `pip install -e '.[
                 # generation_kwargs
                 until = request_args.get("until")
                 max_gen_toks = request_args.get("max_gen_toks", self.max_length)
-                temperature = request_args.get("temperature", self.temperature)
-                response = bedrock_chat(
+                response = claude_chat(
                     client=self.client,
                     model=self.model,
                     prompt=inp,
                     max_tokens=max_gen_toks,
-                    temperature=temperature,  # TODO: implement non-greedy sampling for bedrock
+                    temperature=self.temperature,
+
                     stop=until,  # type: ignore
                     **self.kwargs,
                 )
@@ -186,15 +159,10 @@ please install boto3 via `pip install 'lm-eval[bedrock]'` or `pip install -e '.[
 
                 self.cache_hook.add_partial("generate_until", request, response)
 
-            except botocore.exceptions.ClientError as error:  # type: ignore # noqa: F821
-                eval_logger.critical(f"Boto client error: {error}")
+            except Exception as error:  # 우선 모든 에러 처리 ㅎㅎ..
+                eval_logger.critical(f"Anthropic error: {error}")
                 break
 
-            except botocore.exceptions.ParamValidationError as error:  # type: ignore # noqa: F821
-                eval_logger.critical(
-                    f"The parameters you provided are incorrect: {error}"
-                )
-                break
 
         return res
 
