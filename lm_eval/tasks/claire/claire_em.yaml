@@ -21,5 +21,10 @@ generation_kwargs:
     - "."
   do_sample: false
   temperature: 0.0
+filter_list:
+  - name: "get-answer"
+    filter:
+      - function: "remove_whitespace"
+      - function: "take_first"
 metadata:
     version: 0.1

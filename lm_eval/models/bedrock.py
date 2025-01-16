@@ -1,7 +1,8 @@
 import json
 import os
+from enum import Enum
 from importlib.util import find_spec
-from typing import Any, List, Tuple
+from typing import Any, List, Tuple, Literal, Callable
 
 from tqdm import tqdm
 
@@ -11,8 +12,50 @@ from lm_eval.api.registry import register_model
 
 eval_logger = utils.eval_logger
 
+ModelType = Literal["llama3", "haiku"]
 
-def bedrock_chat(
+
+class BaseModel(str, Enum):
+    LLAMA = "llama3"
+    CLAUDE = "haiku"
+
+
+def bedrock_llama_chat(
+    client,  # boto3.client("bedrock-runtime")
+    model: str,
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+    stop: List[str],
+    **kwargs: Any,
+) -> str:
+    def messages():
+
+        system = kwargs["system"]
+        message = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>{system}<|eot_id|><|start_header_id|>user<|end_header_id|>{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
+        body = {
+            "max_gen_len": max_tokens,
+            "temperature": temperature,
+            "prompt": message,
+        }
+        if "top_p" in kwargs:
+            body["top_p"] = kwargs["top_p"]
+        body_bytes = json.dumps(body).encode("utf-8")
+
+        response = client.invoke_model(
+            body=body_bytes,
+            contentType="application/json",
+            accept="application/json",
+            modelId=model,
+        )
+        model_response = json.loads(response["body"].read())
+
+        return model_response["generation"]
+
+    return messages()
+
+
+def bedrock_claude_chat(
     client,  # boto3.client("bedrock-runtime")
     model: str,
     prompt: str,
@@ -87,6 +130,7 @@ class BedrockChatLM(LM):
     def __init__(
         self,
         model: str,
+        base_model: ModelType,
         batch_size: int = 1,
         max_tokens: int = 256,
         temperature: float = 0,  # defaults to 1
@@ -113,10 +157,12 @@ please install boto3 via `pip install 'lm-eval[bedrock]'` or `pip install -e '.[
             )
 
         self.model = model
+        self.base_model = base_model
         self.client = boto3.client("bedrock-runtime")
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.tokenizer = None
+        self.chat_strategy = self._get_chat_strategy()
         self.kwargs = kwargs
 
     @property
@@ -151,6 +197,11 @@ please install boto3 via `pip install 'lm-eval[bedrock]'` or `pip install -e '.[
     def _loglikelihood_tokens(self, requests, disable_tqdm: bool = False):
         raise NotImplementedError("No support for logits.")
 
+    def _get_chat_strategy(self) -> Callable:
+        if self.base_model == BaseModel.LLAMA:
+            return bedrock_llama_chat
+        return bedrock_claude_chat
+
     def generate_until(self, requests, disable_tqdm: bool = False) -> List[str]:
         if not find_spec("boto3"):
             raise Exception(
@@ -173,7 +224,7 @@ please install boto3 via `pip install 'lm-eval[bedrock]'` or `pip install -e '.[
                 until = request_args.get("until")
                 max_gen_toks = request_args.get("max_gen_toks", self.max_length)
                 temperature = request_args.get("temperature", self.temperature)
-                response = bedrock_chat(
+                response = self.chat_strategy(
                     client=self.client,
                     model=self.model,
                     prompt=inp,
