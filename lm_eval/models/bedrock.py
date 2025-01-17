@@ -1,14 +1,15 @@
 import json
-import os
 from enum import Enum
 from importlib.util import find_spec
 from typing import Any, List, Tuple, Literal, Callable
 
-from tqdm import tqdm
-
 from lm_eval import utils
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
+from tqdm import tqdm
+from botocore.config import Config
+
+config = Config(read_timeout=1000)
 
 eval_logger = utils.eval_logger
 
@@ -158,7 +159,7 @@ please install boto3 via `pip install 'lm-eval[bedrock]'` or `pip install -e '.[
 
         self.model = model
         self.base_model = base_model
-        self.client = boto3.client("bedrock-runtime")
+        self.client = boto3.client("bedrock-runtime", config=config)
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.tokenizer = None
